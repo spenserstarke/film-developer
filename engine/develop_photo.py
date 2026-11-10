@@ -120,8 +120,7 @@ def reference_brightness(path):
             if min(img.shape[:2]) < 120:          # tiny thumbnails aren't reliable
                 return None
         else:
-            from skimage import io as skio, img_as_float
-            img = img_as_float(skio.imread(path))[..., :3]
+            img = f3.linear_to_srgb(f3.load_image(path, meter="none"))
         return float(np.median(img @ Y_WEIGHTS))
     except Exception:
         return None

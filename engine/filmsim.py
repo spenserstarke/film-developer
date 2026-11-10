@@ -43,6 +43,37 @@ def linear_to_srgb(x):
 
 
 # ------------------------------------------------------------------ input
+def _load_with_pillow(path):
+    """HEIC/HEIF/AVIF (iPhone) and JPEG: honours the rotation flag and converts the embedded colour
+    profile (iPhones shoot Display P3) to sRGB, so colours aren't shifted. Returns sRGB float."""
+    import io
+    from PIL import Image, ImageOps, ImageCms
+    try:
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+        try:
+            pillow_heif.register_avif_opener()
+        except Exception:
+            pass
+    except ImportError:
+        pass
+    im = Image.open(path)
+    im = ImageOps.exif_transpose(im)
+    icc = im.info.get("icc_profile")
+    if im.mode not in ("RGB", "L", "RGBA"):
+        im = im.convert("RGB")
+    if im.mode != "RGB":
+        im = im.convert("RGB")
+    if icc:
+        try:
+            src = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+            if "srgb" not in (ImageCms.getProfileDescription(src) or "").lower():
+                im = ImageCms.profileToProfile(im, src, ImageCms.createProfile("sRGB"), outputMode="RGB")
+        except Exception:
+            pass
+    return np.asarray(im, np.float32) / 255.0
+
+
 def load_image(path, exposure_stops=0.0, meter=None):
     """Return scene-linear RGB (float32). RAW files keep linear sensor data;
     JPEG/PNG are display-referred, so highlights above white are already lost."""
@@ -55,6 +86,9 @@ def load_image(path, exposure_stops=0.0, meter=None):
                                   highlight_mode=rawpy.HighlightMode.Blend)
         lin = rgb.astype(np.float32) / 65535.0
         meter = "average" if meter is None else meter
+    elif ext in ("heic", "heif", "avif", "hif", "jpg", "jpeg"):
+        img = _load_with_pillow(path)
+        lin = srgb_to_linear(img).astype(np.float32)
     else:
         from skimage import io, img_as_float
         img = img_as_float(io.imread(path))

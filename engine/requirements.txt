@@ -6,3 +6,4 @@ tifffile
 pillow
 rawpy
 colour-science
+pillow-heif
