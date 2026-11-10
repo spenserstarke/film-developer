@@ -21,6 +21,7 @@ import time
 import numpy as np
 from skimage import transform
 import filmsim3 as f3
+import iphone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STOCK_DIR = os.path.join(HERE, "stocks")
@@ -133,12 +134,17 @@ def match_exposure(st, lin, target, width_mm):
     """Exposure offset (stops) so the film result has the same median brightness as the reference."""
     h, w = lin.shape[:2]
     small = transform.resize(lin, (max(8, int(h * 360 / w)), 360), anti_aliasing=True).astype(np.float32)
-    ks = np.arange(-3.0, 5.01, 1.0)
+    ks = np.arange(-6.0, 5.01, 1.0)
     meds = []
     for k in ks:
         out, _ = f3.simulate(st, small * np.float32(2.0 ** k), width_mm=width_mm)
         meds.append(float(np.median(out @ Y_WEIGHTS)))
     meds = np.maximum.accumulate(np.array(meds))          # monotonic for interpolation
+    # very dark scenes: the print's black (paper D-max) puts a floor under the median. Don't chase a
+    # target below what film can print - stop where lowering exposure no longer changes the result.
+    floor = meds[0] + 0.15 * (meds[-1] - meds[0]) * 0.1
+    if target < floor:
+        target = floor
     if target <= meds[0]:
         return float(ks[0])
     if target >= meds[-1]:
@@ -149,7 +155,7 @@ def match_exposure(st, lin, target, width_mm):
     out, _ = f3.simulate(st, small * np.float32(2.0 ** k), width_mm=width_mm)    # refine once
     m = float(np.median(out @ Y_WEIGHTS))
     slope = (m1 - m0) / (k1 - k0)
-    return float(np.clip(k + (target - m) / max(slope, 1e-3), ks[0], ks[-1]))
+    return float(np.clip(k + (target - m) / max(slope, 1e-3), -3.0, ks[-1]))
 
 
 def main():
@@ -162,6 +168,8 @@ def main():
     ap.add_argument("--exposure", type=float, default=0.0)
     ap.add_argument("--negative", action="store_true")
     ap.add_argument("--engine", choices=["auto", "gpu", "cpu"], default="auto")
+    ap.add_argument("--no-iphone-mode", action="store_true",
+                    help="treat iPhone HEIC/JPEG like any other image (no gain-map/contrast/de-sharpen)")
     ap.add_argument("--cineon", action="store_true",
                     help="also save the scanned negative as a 16-bit Cineon log TIFF (for grading)")
     ap.add_argument("--list-tsv", action="store_true", help=argparse.SUPPRESS)
@@ -198,13 +206,21 @@ def main():
         print(f"Developing {os.path.basename(path)} on {getattr(st, 'display_name', a.stock)} ...", flush=True)
         name = os.path.basename(path)
         prog(n, 0.0, f"{name}: reading", force=True)
-        lin = f3.load_image(path, meter="none")             # keep the photographer's exposure
+        ext = os.path.splitext(path)[1].lower()
+        iphone_mode = (not a.no_iphone_mode and ext in (".heic", ".heif", ".jpg", ".jpeg")
+                       and iphone.is_iphone(path))
+        if iphone_mode:
+            lin = iphone.load_iphone(path, log=lambda m: print(m, flush=True))
+        else:
+            lin = f3.load_image(path, meter="none")         # keep the photographer's exposure
         prog(n, 0.12, f"{name}: preparing", force=True)
         H, W = lin.shape[:2]
         w = min(a.width, W)
         lin = transform.resize(lin, (int(round(H * w / W)), w), anti_aliasing=True).astype(np.float32)
         prog(n, 0.16, f"{name}: matching your exposure", force=True)
         target = reference_brightness(path)
+        if target is not None and iphone_mode:
+            target *= 0.85      # night/HDR modes over-brighten; settle slightly darker, like film
         if target is not None:
             k = match_exposure(st, lin, target, FORMAT_MM[a.format])
             how = f"matched preview brightness {target:.2f}"
