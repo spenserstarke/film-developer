@@ -161,23 +161,64 @@ case "$SIZE" in Quick*) W=1600 ;; Large*) W=4000 ;; "") exit 0 ;; *) W=2400 ;; e
 FMT=$(osascript -e 'activate' -e 'try' -e 'button returned of (display dialog "Film format?" buttons {"35mm", "120 medium format"} default button 1 with title "Film Developer")' -e 'on error' -e 'return ""' -e 'end try')
 case "$FMT" in 120*) F=120 ;; "") exit 0 ;; *) F=35 ;; esac
 
+# ---- physical look: how the negative is printed
+PRINT=$(osascript -e 'activate' -e 'try' -e 'button returned of (display dialog "Print look? (Applies to negative films; slide films are viewed directly.)" buttons {"Photo print", "Cinema print film", "Cinema print + bleach bypass"} default button 1 with title "Film Developer")' -e 'on error' -e 'return ""' -e 'end try')
+BLEACH=0
+case "$PRINT" in
+  "") exit 0 ;;
+  "Photo print") MEDIUM=photo_paper ;;
+  "Cinema print film") MEDIUM=cinema_2383 ;;
+  *) MEDIUM=cinema_2383
+     BB=$(osascript -e 'activate' -e 'try' -e 'set r to choose from list {"25% (subtle)", "50%", "75%", "100% (full bypass)"} with title "Film Developer" with prompt "Bleach bypass strength:" default items {"50%"}' -e 'if r is false then return ""' -e 'return item 1 of r' -e 'on error' -e 'return ""' -e 'end try')
+     case "$BB" in 25*) BLEACH=0.25 ;; 50*) BLEACH=0.5 ;; 75*) BLEACH=0.75 ;; 100*) BLEACH=1.0 ;; *) exit 0 ;; esac ;;
+esac
+
 ARGS=()
 while IFS= read -r f; do [ -n "$f" ] && ARGS+=("$f"); done <<< "$FILES"
 
 # ---- develop
 note "Developing ${#ARGS[@]} photo(s) on $PICK…"
-log "develop: $KEY width $W format $F, ${#ARGS[@]} file(s)"
+log "develop: $KEY width $W format $F print $MEDIUM bleach $BLEACH, ${#ARGS[@]} file(s)"
+OUTS="$HOME_DIR/outputs.txt"; : > "$OUTS"
 set -o pipefail
-if "$VENV/bin/python" -u develop_photo.py --stock "$KEY" --width "$W" --format "$F" "${ARGS[@]}" 2>&3 \
+if "$VENV/bin/python" -u develop_photo.py --stock "$KEY" --width "$W" --format "$F" --print "$MEDIUM" --bleach "$BLEACH" "${ARGS[@]}" 2>&3 \
    | while IFS= read -r line; do
        echo "$line" >&3
-       case "$line" in PROGRESS*) note "Developing ${line#PROGRESS } …" ;; esac
+       case "$line" in
+         PROGRESS*) note "Developing ${line#PROGRESS } …" ;;
+         OUTPUT\ *) echo "${line#OUTPUT }" >> "$OUTS" ;;
+       esac
      done; then
   pclear
-  note "Done. Saved next to your originals."
-  first="${ARGS[0]%.*}_$KEY"
-  [ -f "$first.tif" ] && open -R "$first.tif"
+  set +o pipefail
 else
   pclear
   fail "Something went wrong developing your photos."
+fi
+
+# ---- creative looks: optional finishing window with real-time preview
+DEVELOPED=()
+while IFS= read -r f; do [ -n "$f" ] && [ -f "$f" ] && DEVELOPED+=("$f"); done < "$OUTS"
+[ ${#DEVELOPED[@]} -eq 0 ] && fail "Developing finished but no files were saved."
+NEXT=$(osascript -e 'activate' -e 'try' -e 'button returned of (display dialog "Your photos are developed and saved next to the originals. Add a creative look?" buttons {"Show in Finder", "Add a look"} default button 2 with title "Film Developer")' -e 'on error' -e 'return ""' -e 'end try')
+if [ "$NEXT" = "Add a look" ]; then
+  FIN_LOG="$HOME_DIR/finish.log"; : > "$FIN_LOG"
+  "$VENV/bin/python" -u finish_server.py "${DEVELOPED[@]}" > "$FIN_LOG" 2>&3 &
+  FIN_PID=$!
+  for i in $(seq 1 120); do grep -q FINISH_URL "$FIN_LOG" && break; sleep 0.25; done
+  URL="$(sed -n 's/^FINISH_URL //p' "$FIN_LOG" | head -1)"
+  if [ -n "$URL" ]; then
+    log "finishing window at $URL"
+    open "$URL"
+    wait "$FIN_PID"                       # until Done is clicked (or the page is closed for 3 minutes)
+    cat "$FIN_LOG" >&3
+    graded="$(sed -n 's/^SAVED //p' "$FIN_LOG" | tail -1)"
+    [ -n "$graded" ] && open -R "$graded" || open -R "${DEVELOPED[0]}"
+  else
+    kill "$FIN_PID" 2>/dev/null
+    fail "The finishing window couldn't start."
+  fi
+else
+  note "Done. Saved next to your originals."
+  open -R "${DEVELOPED[0]}"
 fi

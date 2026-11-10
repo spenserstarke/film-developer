@@ -153,14 +153,14 @@ def lab_scan_white(srgb, target=0.94, max_gain_stops=0.6, low_key=0.25):
 CAMERA_BASELINE_STOPS = 1.3     # fallback when a RAW has no usable preview (typical camera rendering)
 
 
-def match_exposure(st, lin, target, width_mm):
+def match_exposure(st, lin, target, width_mm, medium="photo_paper", bleach=0.0):
     """Exposure offset (stops) so the film result has the same median brightness as the reference."""
     h, w = lin.shape[:2]
     small = transform.resize(lin, (max(8, int(h * 360 / w)), 360), anti_aliasing=True).astype(np.float32)
     ks = np.arange(-6.0, 5.01, 1.0)
     meds = []
     for k in ks:
-        out, _ = f3.simulate(st, small * np.float32(2.0 ** k), width_mm=width_mm)
+        out, _ = f3.simulate(st, small * np.float32(2.0 ** k), width_mm=width_mm, medium=medium, bleach=bleach)
         meds.append(float(np.median(out @ Y_WEIGHTS)))
     meds = np.maximum.accumulate(np.array(meds))          # monotonic for interpolation
     # very dark scenes: the print's black (paper D-max) puts a floor under the median. Don't chase a
@@ -175,7 +175,7 @@ def match_exposure(st, lin, target, width_mm):
     i = int(np.searchsorted(meds, target))
     k0, k1, m0, m1 = ks[i - 1], ks[i], meds[i - 1], meds[i]
     k = k0 + (k1 - k0) * (target - m0) / max(m1 - m0, 1e-6)
-    out, _ = f3.simulate(st, small * np.float32(2.0 ** k), width_mm=width_mm)    # refine once
+    out, _ = f3.simulate(st, small * np.float32(2.0 ** k), width_mm=width_mm, medium=medium, bleach=bleach)    # refine once
     m = float(np.median(out @ Y_WEIGHTS))
     slope = (m1 - m0) / (k1 - k0)
     return float(np.clip(k + (target - m) / max(slope, 1e-3), -3.0, ks[-1]))
@@ -189,6 +189,10 @@ def main():
     ap.add_argument("--width", type=int, default=2400)
     ap.add_argument("--format", choices=FORMAT_MM, default="35")
     ap.add_argument("--exposure", type=float, default=0.0)
+    ap.add_argument("--print", dest="medium", choices=["photo_paper", "cinema_2383"], default="photo_paper",
+                    help="physical look: print on photo paper (lab scan) or Kodak 2383 cinema print film")
+    ap.add_argument("--bleach", type=float, default=0.0,
+                    help="physical look: bleach bypass strength on the print, 0..1 (retained silver)")
     ap.add_argument("--negative", action="store_true")
     ap.add_argument("--engine", choices=["auto", "gpu", "cpu"], default="auto")
     ap.add_argument("--no-iphone-mode", action="store_true",
@@ -245,7 +249,7 @@ def main():
         if target is not None and iphone_mode:
             target *= iphone.scene_params(path)["darken"]   # night mode over-brightens; daylight barely
         if target is not None:
-            k = match_exposure(st, lin, target, FORMAT_MM[a.format])
+            k = match_exposure(st, lin, target, FORMAT_MM[a.format], a.medium, a.bleach)
             how = f"matched preview brightness {target:.2f}"
         else:
             k = CAMERA_BASELINE_STOPS if os.path.splitext(path)[1].lower() in RAW_EXTS else 0.0
@@ -258,14 +262,19 @@ def main():
             n, 0.18 + 0.62 * fr, f"{name}: " + ("making the print" if fr >= 0.999
                                                  else "exposing and developing the film"), force=fr >= 0.999)
         if gpu is not None:
-            out, dye = gpu.simulate(st, lin, width_mm=FORMAT_MM[a.format], return_dye=True)
+            out, dye = gpu.simulate(st, lin, width_mm=FORMAT_MM[a.format], return_dye=True,
+                                    medium=a.medium, bleach=a.bleach)
             D = f3.dye_to_density(st, dye)
         else:
-            out, D = f3.simulate(st, lin, width_mm=FORMAT_MM[a.format])
+            out, D = f3.simulate(st, lin, width_mm=FORMAT_MM[a.format], medium=a.medium, bleach=a.bleach)
         f3.PROGRESS = None
         out = lab_scan_white(out)
         prog(n, 0.9, f"{name}: saving 16-bit TIFF", force=True)
-        saved = save_outputs(path, a.stock, out)
+        suffix = a.stock + ("" if st.reversal or a.medium == "photo_paper" else "_2383") \
+            + (f"_bleach{int(round(a.bleach * 100))}" if a.bleach and not st.reversal else "")
+        saved = save_outputs(path, suffix, out)
+        for sp in saved:
+            print(f"OUTPUT {sp}", flush=True)
         prog(n, 1.0, f"{name}: done", force=True)
         if a.cineon and not st.reversal:
             save_cineon(os.path.splitext(path)[0] + f"_{a.stock}_cineon.tif", st, D)

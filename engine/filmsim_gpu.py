@@ -143,53 +143,26 @@ def _paper_lookup(logH, le, dc):
     return dc[idx] * (1 - fr) + dc[idx + 1] * fr
 
 
-def finish(st, dye, dev=DEV, chunk=1_000_000):
-    """Dye (3,H,W) -> sRGB numpy (H,W,3) via spectral print (negatives) or light table (slides)."""
-    import colour
-    sd = st.spectral_data
-    wl = sd["wl"]
+def finish(st, dye, dev=DEV, medium="photo_paper", bleach=0.0):
+    """Dye (3,H,W) -> sRGB numpy (H,W,3): same print LUT as the CPU engine (spectral print +
+    lab-scan levels, or slide viewing), applied with trilinear 3D lookup on the GPU."""
     dye = gblur(dye, 0.4)
-    dmax = _t(np.array([f3.layer_dmax(st, i) for i in range(3)]), dev)
+    lut = _t(f3.print_lut(st, medium, bleach), dev)                 # (n, n, n, 3), axes = dye C, M, Y
+    n = lut.shape[0]
+    vol = lut.permute(3, 0, 1, 2)[None]                             # (1, 3, D=C, H=M, W=Y)
+    x = (dye.clamp(0, f3.LUT_MAX) / f3.LUT_MAX) * 2 - 1             # normalised coords
     h, w = dye.shape[1:]
-    X = (dye * dmax[:, None, None]).reshape(3, -1).T
-    base = _t(sd["base"], dev)
-    V = _t(f3._viewing_matrix(wl, "D50"), dev)
-    out = torch.empty_like(X)
-    if st.reversal:
-        S = _t(sd["spec"], dev)
-        white = _t(f3.slide_balance(st), dev)
-        for c in range(0, X.shape[0], chunk):
-            T = 10.0 ** -(base[None] + X[c:c + chunk] @ S)
-            out[c:c + chunk] = (T @ V) / white[None]
-    else:
-        pp = st.paper
-        _, offs = f3._print_setup(st)
-        enl = colour.sd_blackbody(3200, colour.SpectralShape(wl[0], wl[-1], wl[1] - wl[0])).values
-        K = enl[:, None] * pp["sens"]
-        K = _t(K / K.sum(0, keepdims=True), dev)
-        S = _t(f3._neg_spectra(st), dev)
-        pbase, pspec = _t(pp["base"], dev), _t(pp["spec"], dev)
-        le, dc = _t(pp["le"], dev), _t(pp["dc"], dev)
-        white = (10.0 ** -pbase) @ V
-        o = _t(offs, dev)
-        for c in range(0, X.shape[0], chunk):
-            T = 10.0 ** -(base[None] + X[c:c + chunk] @ S)
-            logH = torch.log10((T @ K).clamp_min(1e-30)) + o[None]
-            Dp = torch.stack([_paper_lookup(logH[:, l], le, dc[:, l]) for l in range(3)], 1)
-            R = 10.0 ** -(pbase[None] + Dp @ pspec)
-            out[c:c + chunk] = (R @ V) / white[None]
-    if not st.reversal:      # lab-scan black point (see filmsim3.scan_levels)
-        bk = _t(f3.scan_black(st), dev)
-        out = f3.SCAN_BLACK + (out - bk[None]) / (1.0 - bk[None]) * (1.0 - f3.SCAN_BLACK)
-    rgb = out.clamp_min(0).reshape(h, w, 3)
+    grid = torch.stack([x[2], x[1], x[0]], -1)[None, None]          # grid_sample wants (x=W, y=H, z=D)
+    out = F.grid_sample(vol, grid, mode="bilinear", padding_mode="border", align_corners=True)[0, :, 0]
+    rgb = out.permute(1, 2, 0).clamp_min(0)
     srgb = torch.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * rgb.clamp_min(1e-12) ** (1 / 2.4) - 0.055)
     return srgb.clamp(0, 1).cpu().numpy()
 
 
-def simulate(st, lin, width_mm=36.0, dev=DEV, return_dye=False):
+def simulate(st, lin, width_mm=36.0, dev=DEV, return_dye=False, medium="photo_paper", bleach=0.0):
     with torch.no_grad():
         dye = develop(st, lin, width_mm, dev)
-        out = finish(st, dye, dev)
+        out = finish(st, dye, dev, medium, bleach)
     return (out, dye.cpu().numpy()) if return_dye else out
 
 
