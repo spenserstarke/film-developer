@@ -6,11 +6,16 @@
 say() { osascript -e "activate" -e "display dialog \"$1\" buttons {\"OK\"} default button 1 with title \"Film Developer\"" >/dev/null 2>&1; }
 note() { osascript -e "display notification \"$1\" with title \"Film Developer\"" >/dev/null 2>&1; }
 fail() {
+  rm -f "$FD_PROGRESS"
   r=$(osascript -e "activate" -e "try" -e "button returned of (display dialog \"$1\" buttons {\"Show Log\", \"OK\"} default button 2 with title \"Film Developer\")" -e "end try")
   [ "$r" = "Show Log" ] && open -a TextEdit "$LOG"
   exit 1
 }
 log() { echo "[$(date '+%H:%M:%S')] $*" >&3; }
+# progress bar (shown by the app window for anything still running after ~1 second)
+export FD_PROGRESS="$HOME_DIR/progress"
+pstart() { printf '%s\t%s\t%s\t%s\n' "s$$-$RANDOM" "${3:--1}" "$1" "$2" > "$FD_PROGRESS.tmp" && mv -f "$FD_PROGRESS.tmp" "$FD_PROGRESS"; }
+pclear() { rm -f "$FD_PROGRESS"; }
 
 cd "$ENGINE" || exit 1
 
@@ -25,7 +30,7 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   rm -rf "$LOCK"; mkdir "$LOCK" 2>/dev/null || true      # stale lock from a run that was force-quit
 fi
 echo $$ > "$LOCK/pid"
-trap 'rm -rf "$LOCK"' EXIT
+trap 'rm -rf "$LOCK"; rm -f "$FD_PROGRESS"' EXIT
 ARCH="$(uname -m)"                               # x86_64 (Intel) or arm64 (Apple Silicon)
 PYVER="3.12"                                     # every component ships ready-made for 3.12 on both
 VENV="$HOME_DIR/venv-py$PYVER"
@@ -35,9 +40,18 @@ export UV_CACHE_DIR="$HOME_DIR/cache"
 log "launch: engine $(cat VERSION), arch $ARCH, macOS $(sw_vers -productVersion 2>/dev/null)"
 
 # ---- one-time: install a real Mac app (Dock icon, no security prompt) into Applications
-if [ -z "$FD_APPLET" ] && command -v osacompile >/dev/null 2>&1; then
+APPLET_WANT="$(sed -n 's/^APPLET_VERSION=//p' "$ENGINE/install_app.sh")"
+if command -v osacompile >/dev/null 2>&1; then
   inst_ver="$(sed -n 1p "$HOME_DIR/installed_app" 2>/dev/null)"; inst_path="$(sed -n 2p "$HOME_DIR/installed_app" 2>/dev/null)"
-  if [ "$inst_ver" != "1" ] || [ ! -d "$inst_path" ]; then
+  if [ -n "$FD_APPLET" ] && [ -d "$inst_path" ] && [ "$inst_ver" != "$APPLET_WANT" ]; then
+    # running from an older installed app: rebuild it, then relaunch the new one once this one quits
+    if /bin/bash "$ENGINE/install_app.sh" >/dev/null 2>&3; then
+      log "rebuilt installed app (v$APPLET_WANT); relaunching"
+      rm -rf "$LOCK"; trap - EXIT
+      nohup /bin/bash -c "sleep 4; open \"$inst_path\"" >/dev/null 2>&1 &
+      exit 0
+    fi
+  elif [ -z "$FD_APPLET" ] && { [ "$inst_ver" != "$APPLET_WANT" ] || [ ! -d "$inst_path" ]; }; then
     if APP_PATH="$(/bin/bash "$ENGINE/install_app.sh" 2>&3)" && [ -d "$APP_PATH" ]; then
       log "installed app at $APP_PATH"
       osascript -e "activate" -e "display dialog \"Film Developer is now installed in your Applications folder, with its own Dock icon, and will open from there now. Use that one from now on; you can delete the copy you downloaded.\" buttons {\"OK\"} default button 1 with title \"Film Developer\"" >/dev/null 2>&1
@@ -56,6 +70,7 @@ REQ_HASH="$(cat $REQS | shasum | cut -d' ' -f1)-$ARCH"
 
 if [ ! -x "$VENV/bin/python" ] || [ "$(cat "$VENV/.req" 2>/dev/null)" != "$REQ_HASH" ]; then
   note "Setting up (first run downloads about 150 MB and takes a few minutes)…"
+  pstart "Setting up Film Developer" "Downloading Python and components (first run only, a few minutes)"
   # 1) uv: a small tool that installs a private copy of Python and the components
   if [ ! -x "$UV" ]; then
     case "$ARCH" in arm64) UVARCH=aarch64 ;; *) UVARCH=x86_64 ;; esac
@@ -99,6 +114,7 @@ if [ ! -x "$VENV/bin/python" ] || [ "$(cat "$VENV/.req" 2>/dev/null)" != "$REQ_H
   [ "$ok" = 1 ] || fail "Setup couldn't download its components. Check your internet connection and open Film Developer again. If it keeps failing, click Show Log and send the log to Claude."
   echo "$REQ_HASH" > "$VENV/.req"
   log "setup complete"
+  pclear
 fi
 
 # (--only-binary: never compile from source. Newer releases sometimes drop Intel-Mac builds, e.g.
@@ -122,10 +138,11 @@ EOF
 [ -z "$FILES" ] && exit 0
 
 # ---- choose stock
-STOCKS="$("$VENV/bin/python" develop_photo.py --list-tsv 2>&3)" || fail "Film Developer couldn't load its film stocks."
+pstart "Loading film stocks" "Preparing 21 film stocks"
+STOCKS="$("$VENV/bin/python" develop_photo.py --list-tsv 2>&3)" || { pclear; fail "Film Developer couldn't load its film stocks."; }
+pclear
 NAMES="$(printf '%s\n' "$STOCKS" | cut -f2 | sed 's/"/\\"/g' | awk '{printf "%s\"%s\"", (NR>1?",":""), $0}')"
 LAST="$(cat "$HOME_DIR/last_stock" 2>/dev/null || echo "Kodak Portra 400")"
-note "Loading film stocks…"
 log "stocks loaded: $(printf '%s\n' "$STOCKS" | grep -c .)"
 PICK=$(osascript -e "activate" -e "try" -e "set r to choose from list {$NAMES} with title \"Film Developer\" with prompt \"Film stock:\" default items {\"$LAST\"}" -e "if r is false then return \"\"" -e "return item 1 of r" -e "on error m" -e "return \"ERROR: \" & m" -e "end try" 2>&3)
 log "stock picked: $PICK"
@@ -150,9 +167,11 @@ if "$VENV/bin/python" -u develop_photo.py --stock "$KEY" --width "$W" --format "
        echo "$line" >&3
        case "$line" in PROGRESS*) note "Developing ${line#PROGRESS } …" ;; esac
      done; then
+  pclear
   note "Done. Saved next to your originals."
   first="${ARGS[0]%.*}_$KEY"
   [ -f "$first.tif" ] && open -R "$first.tif"
 else
+  pclear
   fail "Something went wrong developing your photos."
 fi

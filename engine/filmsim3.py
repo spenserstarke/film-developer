@@ -364,6 +364,10 @@ def _bin_tables(sl: SubLayer, k, n_bins=3, nz=8, reversal=False):
     return out
 
 
+PROGRESS = None        # optional callable(fraction 0..1) for the development stage
+_band_tick = None      # set by develop(): called once per finished band of rows
+
+
 def develop_layer(st: Stock, i, light, frame: Frame, band_rows=64, strip_rows=8, n_bins=3):
     """Cell engine. Developed crystals of the crystal field are sampled per small cell: count and
     total area of dye-forming crystals of each size class, with the exact mean and variance of
@@ -434,6 +438,8 @@ def develop_layer(st: Stock, i, light, frame: Frame, band_rows=64, strip_rows=8,
             out[b0:b1] = -np.log10(T[margin:margin + (b1 - b0)])
         else:
             out[b0:b1] = Dsub[margin:margin + (b1 - b0)]
+        if _band_tick is not None:
+            _band_tick()
     return out
 
 
@@ -444,8 +450,19 @@ def develop(st: Stock, lin, width_mm=36.0, engine="cell", return_dye=False):
     frame = Frame(h, w, width_mm)
     light = _layer_light(st, lin, frame)
     dev = develop_layer if engine == "cell" else develop_layer_explicit
+    global _band_tick
+    if PROGRESS is not None and engine == "cell":
+        import threading
+        total, done, lk = 3 * (-(-h // 64)), [0], threading.Lock()
+
+        def _tick():
+            with lk:
+                done[0] += 1
+                PROGRESS(min(done[0] / total, 1.0))
+        _band_tick = _tick
     with ThreadPoolExecutor(3) as ex:
         f = np.stack(list(ex.map(lambda i: dev(st, i, light[i], frame) / layer_dmax(st, i), range(3))))
+    _band_tick = None
     inh = np.stack([ndimage.gaussian_filter(f[j], st.dir_um / frame.px_um) for j in range(3)])
     dye = f * np.clip(1 - np.einsum("ij,jhw->ihw", st.dir_matrix, inh), 0, 1)
     D = dye_to_density(st, dye)

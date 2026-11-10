@@ -28,6 +28,7 @@ if [ -n "$REPO" ]; then
   local_ver="$(cat "$ENGINE/VERSION" 2>/dev/null || echo 0)"
   if [ -n "$remote_ver" ] && ver_gt "$remote_ver" "$local_ver"; then
     note "Updating to version $remote_ver…"
+    printf 'u%s\t-1\tUpdating Film Developer\tDownloading version %s\n' "$$" "$remote_ver" > "$HOME_DIR/progress"
     TMP="$(mktemp -d)"
     if curl -fsSL --max-time 300 "https://codeload.github.com/$REPO/zip/refs/heads/$BRANCH" -o "$TMP/u.zip" >&3 2>&1 \
        && unzip -q "$TMP/u.zip" -d "$TMP" && NEW="$(ls -d "$TMP"/*/"$SUB" 2>/dev/null | head -1)" \
@@ -37,7 +38,7 @@ if [ -n "$REPO" ]; then
     else
       echo "update to $remote_ver failed; keeping $local_ver" >&3
     fi
-    rm -rf "$TMP"
+    rm -rf "$TMP"; rm -f "$HOME_DIR/progress"
   fi
 fi
 exec /bin/bash "$ENGINE/launch.sh"

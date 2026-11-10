@@ -76,6 +76,29 @@ def save_outputs(src_path, stock_key, srgb):
     return [path]
 
 
+class Progress:
+    """Writes 'token<TAB>percent<TAB>title<TAB>detail' to $FD_PROGRESS for the app's progress bar."""
+    def __init__(self, n):
+        self.path, self.n, self.last = os.environ.get("FD_PROGRESS"), n, 0.0
+        self.token = f"dev{os.getpid()}"
+
+    def __call__(self, i, frac, detail, force=False):
+        if not self.path:
+            return
+        now = time.time()
+        if not force and now - self.last < 0.15:
+            return
+        self.last = now
+        pct = int(100 * ((i - 1) + min(max(frac, 0.0), 1.0)) / self.n)
+        title = f"Developing photo {i} of {self.n}" if self.n > 1 else "Developing photo"
+        try:
+            with open(self.path + ".tmp", "w") as fh:
+                fh.write(f"{self.token}\t{pct}\t{title}\t{detail}\n")
+            os.replace(self.path + ".tmp", self.path)
+        except OSError:
+            pass
+
+
 def main():
     ap = argparse.ArgumentParser(description="Develop photos on simulated film (filmsim v3)")
     ap.add_argument("photos", nargs="*")
@@ -115,20 +138,31 @@ def main():
             if a.engine == "gpu":
                 raise SystemExit(f"GPU engine unavailable: {e}")
             gpu = None
+    prog = Progress(len(a.photos))
     for n, path in enumerate(a.photos, 1):
         print(f"PROGRESS {n}/{len(a.photos)} {os.path.basename(path)}", flush=True)
         t = time.time()
         print(f"Developing {os.path.basename(path)} on {getattr(st, 'display_name', a.stock)} ...", flush=True)
+        name = os.path.basename(path)
+        prog(n, 0.0, f"{name}: reading", force=True)
         lin = f3.load_image(path, exposure_stops=a.exposure)
+        prog(n, 0.12, f"{name}: preparing", force=True)
         H, W = lin.shape[:2]
         w = min(a.width, W)
         lin = transform.resize(lin, (int(round(H * w / W)), w), anti_aliasing=True).astype(np.float32)
+        prog(n, 0.18, f"{name}: exposing and developing the film", force=True)
+        f3.PROGRESS = lambda fr, n=n, name=name: prog(
+            n, 0.18 + 0.62 * fr, f"{name}: " + ("making the print" if fr >= 0.999
+                                                 else "exposing and developing the film"), force=fr >= 0.999)
         if gpu is not None:
             out, dye = gpu.simulate(st, lin, width_mm=FORMAT_MM[a.format], return_dye=True)
             D = f3.dye_to_density(st, dye)
         else:
             out, D = f3.simulate(st, lin, width_mm=FORMAT_MM[a.format])
+        f3.PROGRESS = None
+        prog(n, 0.9, f"{name}: saving 16-bit TIFF", force=True)
         saved = save_outputs(path, a.stock, out)
+        prog(n, 1.0, f"{name}: done", force=True)
         if a.cineon and not st.reversal:
             save_cineon(os.path.splitext(path)[0] + f"_{a.stock}_cineon.tif", st, D)
         if a.negative and not st.reversal and D is not None:

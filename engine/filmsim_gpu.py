@@ -102,6 +102,8 @@ def develop(st, lin, width_mm=36.0, dev=DEV, n_bins=3):
     nsub = len(st.sub[0])
     for j in range(nsub):
         for bi in range(n_bins):
+            if f3.PROGRESS is not None:
+                f3.PROGRESS((j * n_bins + bi) / (nsub * n_bins))
             z_sh = torch.randn(L.shape[1:], generator=g_shared, device=dev, **T32)
             for i in range(3):
                 sl = st.sub[i][j]
