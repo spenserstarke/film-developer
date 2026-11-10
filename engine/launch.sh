@@ -21,6 +21,20 @@ export UV_PYTHON_INSTALL_DIR="$HOME_DIR/python"  # keep the app's Python inside 
 export UV_CACHE_DIR="$HOME_DIR/cache"
 log "launch: engine $(cat VERSION), arch $ARCH, macOS $(sw_vers -productVersion 2>/dev/null)"
 
+# ---- one-time: install a real Mac app (Dock icon, no security prompt) into Applications
+if [ -z "$FD_APPLET" ] && command -v osacompile >/dev/null 2>&1; then
+  inst_ver="$(sed -n 1p "$HOME_DIR/installed_app" 2>/dev/null)"; inst_path="$(sed -n 2p "$HOME_DIR/installed_app" 2>/dev/null)"
+  if [ "$inst_ver" != "1" ] || [ ! -d "$inst_path" ]; then
+    if APP_PATH="$(/bin/bash "$ENGINE/install_app.sh" 2>&3)" && [ -d "$APP_PATH" ]; then
+      log "installed app at $APP_PATH"
+      osascript -e "activate" -e "display dialog \"Film Developer is now installed in your Applications folder, with its own Dock icon. Open it from there from now on; you can delete the copy you downloaded.\" buttons {\"OK\"} default button 1 with title \"Film Developer\"" >/dev/null 2>&1
+      open -R "$APP_PATH"
+    else
+      log "app install skipped (osacompile failed)"
+    fi
+  fi
+fi
+
 REQS="requirements.txt"
 [ "$ARCH" = "arm64" ] && [ -f requirements-gpu.txt ] && REQS="$REQS requirements-gpu.txt"
 REQ_HASH="$(cat $REQS | shasum | cut -d' ' -f1)-$ARCH"
