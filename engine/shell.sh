@@ -24,7 +24,7 @@ REPO="$(json_get "$ENGINE/update.json" repo)"
 BRANCH="$(json_get "$ENGINE/update.json" branch)"; BRANCH="${BRANCH:-main}"
 SUB="$(json_get "$ENGINE/update.json" path)"; SUB="${SUB:-engine}"
 if [ -n "$REPO" ]; then
-  remote_ver="$(curl -fsSL --max-time 6 "https://raw.githubusercontent.com/$REPO/$BRANCH/$SUB/VERSION" 2>/dev/null | tr -d '[:space:]')"
+  remote_ver="$(curl -fsSL --max-time 6 "https://raw.githubusercontent.com/$REPO/$BRANCH/$SUB/VERSION?t=$(date +%s)" 2>/dev/null | tr -d '[:space:]')"
   local_ver="$(cat "$ENGINE/VERSION" 2>/dev/null || echo 0)"
   if [ -n "$remote_ver" ] && ver_gt "$remote_ver" "$local_ver"; then
     note "Updating to version $remote_ver…"
