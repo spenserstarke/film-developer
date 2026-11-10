@@ -662,12 +662,34 @@ def view_slide(st: Stock, D, blur_px=0.4):
     return np.moveaxis(T, 0, -1)
 
 
+SCAN_BLACK = 0.0015     # linear level a lab scanner puts the print's deepest black at (sRGB ~0.02)
+
+
+def scan_black(st: Stock):
+    """Per-channel output of the deepest printable black (unexposed negative -> max paper density).
+    Measured, not guessed: it's what this stock + paper actually produce. Cached on the stock."""
+    cached = getattr(st, "_scan_black", None)
+    if cached is not None:
+        return cached
+    dmax = np.array([layer_dmax(st, i) for i in range(3)])
+    x = (_midgrey_dye(st, -14.0) / dmax)[:, None, None] * np.ones((3, 1, 1))
+    st._scan_black = print_spectral(st, x)[0, 0].astype(np.float32)
+    return st._scan_black
+
+
+def scan_levels(st: Stock, lin):
+    """Lab-scan black point (Frontier/Noritsu style): the print's deepest black -> neutral near-black,
+    paper white stays white. Most film photos people know are scans like this, not optical prints."""
+    b = scan_black(st)
+    return SCAN_BLACK + (lin - b) / (1.0 - b) * (1.0 - SCAN_BLACK)
+
+
 def simulate(st: Stock, lin, width_mm=36.0, system_gamma=1.4, spectral=True):
     """Returns (sRGB image, negative/slide channel densities)."""
     D, dye = develop(st, lin, width_mm, return_dye=True)
     if spectral and st.spectral_data is not None:
         dye = np.stack([ndimage.gaussian_filter(dye[c], 0.4) for c in range(3)])   # enlarger/scan optics
-        lin_out = view_slide_spectral(st, dye) if st.reversal else print_spectral(st, dye)
+        lin_out = view_slide_spectral(st, dye) if st.reversal else scan_levels(st, print_spectral(st, dye))
     else:
         lin_out = view_slide(st, D) if st.reversal else print_negative(st, D, system_gamma)
     return linear_to_srgb(lin_out), D

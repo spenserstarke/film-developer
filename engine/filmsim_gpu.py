@@ -178,6 +178,9 @@ def finish(st, dye, dev=DEV, chunk=1_000_000):
             Dp = torch.stack([_paper_lookup(logH[:, l], le, dc[:, l]) for l in range(3)], 1)
             R = 10.0 ** -(pbase[None] + Dp @ pspec)
             out[c:c + chunk] = (R @ V) / white[None]
+    if not st.reversal:      # lab-scan black point (see filmsim3.scan_levels)
+        bk = _t(f3.scan_black(st), dev)
+        out = f3.SCAN_BLACK + (out - bk[None]) / (1.0 - bk[None]) * (1.0 - f3.SCAN_BLACK)
     rgb = out.clamp_min(0).reshape(h, w, 3)
     srgb = torch.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * rgb.clamp_min(1e-12) ** (1 / 2.4) - 0.055)
     return srgb.clamp(0, 1).cpu().numpy()

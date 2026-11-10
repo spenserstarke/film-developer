@@ -127,6 +127,29 @@ def reference_brightness(path):
         return None
 
 
+def lab_scan_white(srgb, target=0.94, max_gain_stops=0.6, low_key=0.25):
+    """Per-frame scanner white point (what Frontier/Noritsu auto-correction does): lift the frame so
+    its real highlights (99.5th percentile) sit near white, black point fixed. Measured against real
+    lab scans: daylight frames put the brightest 1% at ~0.93-0.98; ours sat at ~0.83 without this.
+    Low-key frames (night, median below `low_key`) are left alone, as labs leave night scans dark."""
+    Y = srgb @ Y_WEIGHTS
+    if float(np.median(Y)) < low_key:
+        return srgb
+    lin = f3.srgb_to_linear(np.clip(srgb, 0, 1))
+    b = f3.SCAN_BLACK
+    top = float(np.quantile(f3.srgb_to_linear(Y), 0.995))
+    goal = float(f3.srgb_to_linear(np.float32(target)))
+    if top >= goal:
+        return srgb
+    g = min((goal - b) / max(top - b, 1e-4), 2.0 ** max_gain_stops)
+    lin = b + (lin - b) * g
+    # soft shoulder so the few pixels above the target roll off instead of clipping
+    k = 0.92
+    over = lin > k
+    lin[over] = k + (1 - k) * np.tanh((lin[over] - k) / (1 - k))
+    return f3.linear_to_srgb(lin).astype(np.float32)
+
+
 CAMERA_BASELINE_STOPS = 1.3     # fallback when a RAW has no usable preview (typical camera rendering)
 
 
@@ -240,6 +263,7 @@ def main():
         else:
             out, D = f3.simulate(st, lin, width_mm=FORMAT_MM[a.format])
         f3.PROGRESS = None
+        out = lab_scan_white(out)
         prog(n, 0.9, f"{name}: saving 16-bit TIFF", force=True)
         saved = save_outputs(path, a.stock, out)
         prog(n, 1.0, f"{name}: done", force=True)
