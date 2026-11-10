@@ -37,7 +37,7 @@ VENV="$HOME_DIR/venv-py$PYVER"
 BIN="$HOME_DIR/bin"; UV="$BIN/uv"
 export UV_PYTHON_INSTALL_DIR="$HOME_DIR/python"  # keep the app's Python inside its own folder
 export UV_CACHE_DIR="$HOME_DIR/cache"
-log "launch: engine $(cat VERSION), arch $ARCH, macOS $(sw_vers -productVersion 2>/dev/null)"
+log "launch: engine $(cat VERSION), arch $ARCH, macOS $(sw_vers -productVersion 2>/dev/null), from ${FD_APPLET:+installed app}${FD_APPLET:-downloaded copy}, installed app v$(sed -n 1p "$HOME_DIR/installed_app" 2>/dev/null)"
 
 # ---- one-time: install a real Mac app (Dock icon, no security prompt) into Applications
 APPLET_WANT="$(sed -n 's/^APPLET_VERSION=//p' "$ENGINE/install_app.sh")"
@@ -51,6 +51,12 @@ if command -v osacompile >/dev/null 2>&1; then
       nohup /bin/bash -c "sleep 4; open \"$inst_path\"" >/dev/null 2>&1 &
       exit 0
     fi
+  elif [ -z "$FD_APPLET" ] && [ "$inst_ver" = "$APPLET_WANT" ] && [ -d "$inst_path" ]; then
+    # opened from the downloaded copy: hand over to the installed app (it has the progress window)
+    log "handing over to installed app at $inst_path"
+    rm -rf "$LOCK"; trap - EXIT
+    open "$inst_path"
+    exit 0
   elif [ -z "$FD_APPLET" ] && { [ "$inst_ver" != "$APPLET_WANT" ] || [ ! -d "$inst_path" ]; }; then
     if APP_PATH="$(/bin/bash "$ENGINE/install_app.sh" 2>&3)" && [ -d "$APP_PATH" ]; then
       log "installed app at $APP_PATH"
