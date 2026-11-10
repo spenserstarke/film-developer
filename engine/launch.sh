@@ -13,6 +13,19 @@ fail() {
 log() { echo "[$(date '+%H:%M:%S')] $*" >&3; }
 
 cd "$ENGINE" || exit 1
+
+# ---- only one Film Developer run at a time (a second launch would open a second photo picker)
+LOCK="$HOME_DIR/run.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  other="$(cat "$LOCK/pid" 2>/dev/null)"
+  if [ -n "$other" ] && kill -0 "$other" 2>/dev/null; then
+    osascript -e "display notification \"Film Developer is already open. Look for its window (Mission Control shows all windows).\" with title \"Film Developer\"" >/dev/null 2>&1
+    exit 0
+  fi
+  rm -rf "$LOCK"; mkdir "$LOCK" 2>/dev/null || true      # stale lock from a run that was force-quit
+fi
+echo $$ > "$LOCK/pid"
+trap 'rm -rf "$LOCK"' EXIT
 ARCH="$(uname -m)"                               # x86_64 (Intel) or arm64 (Apple Silicon)
 PYVER="3.12"                                     # every component ships ready-made for 3.12 on both
 VENV="$HOME_DIR/venv-py$PYVER"
@@ -27,8 +40,10 @@ if [ -z "$FD_APPLET" ] && command -v osacompile >/dev/null 2>&1; then
   if [ "$inst_ver" != "1" ] || [ ! -d "$inst_path" ]; then
     if APP_PATH="$(/bin/bash "$ENGINE/install_app.sh" 2>&3)" && [ -d "$APP_PATH" ]; then
       log "installed app at $APP_PATH"
-      osascript -e "activate" -e "display dialog \"Film Developer is now installed in your Applications folder, with its own Dock icon. Open it from there from now on; you can delete the copy you downloaded.\" buttons {\"OK\"} default button 1 with title \"Film Developer\"" >/dev/null 2>&1
-      open -R "$APP_PATH"
+      osascript -e "activate" -e "display dialog \"Film Developer is now installed in your Applications folder, with its own Dock icon, and will open from there now. Use that one from now on; you can delete the copy you downloaded.\" buttons {\"OK\"} default button 1 with title \"Film Developer\"" >/dev/null 2>&1
+      rm -rf "$LOCK"; trap - EXIT
+      open "$APP_PATH"          # hand over to the installed app; this run ends here
+      exit 0
     else
       log "app install skipped (osacompile failed)"
     fi
@@ -137,7 +152,7 @@ if "$VENV/bin/python" -u develop_photo.py --stock "$KEY" --width "$W" --format "
      done; then
   note "Done. Saved next to your originals."
   first="${ARGS[0]%.*}_$KEY"
-  for ext in tif jpg png; do [ -f "$first.$ext" ] && { open -R "$first.$ext"; break; }; done
+  [ -f "$first.tif" ] && open -R "$first.tif"
 else
   fail "Something went wrong developing your photos."
 fi

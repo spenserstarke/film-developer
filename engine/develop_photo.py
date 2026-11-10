@@ -11,9 +11,7 @@ Options:
   --exposure 0.5             exposure adjustment in stops
   --negative                 also save the negative (negative films only)
 
-Output, saved next to each input:
-  RAW / DNG in   -> <name>_<stock>.tif  (16-bit, sRGB-tagged, for editing)  +  .jpg (for sharing)
-  JPEG in        -> .jpg     PNG in -> .png (16-bit)     TIFF in -> .tif (16-bit)
+Output, saved next to each input: <name>_<stock>.tif  (16-bit, sRGB-tagged)
 """
 import argparse
 import glob
@@ -72,19 +70,10 @@ def save_cineon(path, st, D):
 
 
 def save_outputs(src_path, stock_key, srgb):
-    base, ext = os.path.splitext(src_path)
-    ext = ext.lower()
-    stem = f"{base}_{stock_key}"
-    if ext in RAW_EXTS or ext in (".tif", ".tiff"):
-        save_tiff16(stem + ".tif", srgb)
-        saved = [stem + ".tif"]
-        if ext in RAW_EXTS:
-            save_jpeg(stem + ".jpg", srgb); saved.append(stem + ".jpg")
-    elif ext == ".png":
-        save_png16(stem + ".png", srgb); saved = [stem + ".png"]
-    else:
-        save_jpeg(stem + ".jpg", srgb); saved = [stem + ".jpg"]
-    return saved
+    """Every input is saved as one 16-bit, sRGB-tagged TIFF next to the original."""
+    path = f"{os.path.splitext(src_path)[0]}_{stock_key}.tif"
+    save_tiff16(path, srgb)
+    return [path]
 
 
 def main():
