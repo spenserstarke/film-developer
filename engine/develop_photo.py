@@ -99,6 +99,60 @@ class Progress:
             pass
 
 
+Y_WEIGHTS = np.array([0.2126, 0.7152, 0.0722], np.float32)
+
+
+def reference_brightness(path):
+    """Median brightness (sRGB) of how the photo is meant to look: the camera's / editor's embedded
+    preview for RAW files, or the image itself for JPEG/PNG/TIFF. None if unavailable."""
+    import io
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        if ext in RAW_EXTS:
+            import rawpy
+            from PIL import Image
+            with rawpy.imread(path) as r:
+                th = r.extract_thumb()
+            if th.format == rawpy.ThumbFormat.JPEG:
+                img = np.asarray(Image.open(io.BytesIO(th.data)).convert("RGB"), np.float32) / 255
+            else:
+                img = np.asarray(th.data, np.float32) / 255
+            if min(img.shape[:2]) < 120:          # tiny thumbnails aren't reliable
+                return None
+        else:
+            from skimage import io as skio, img_as_float
+            img = img_as_float(skio.imread(path))[..., :3]
+        return float(np.median(img @ Y_WEIGHTS))
+    except Exception:
+        return None
+
+
+CAMERA_BASELINE_STOPS = 1.3     # fallback when a RAW has no usable preview (typical camera rendering)
+
+
+def match_exposure(st, lin, target, width_mm):
+    """Exposure offset (stops) so the film result has the same median brightness as the reference."""
+    h, w = lin.shape[:2]
+    small = transform.resize(lin, (max(8, int(h * 360 / w)), 360), anti_aliasing=True).astype(np.float32)
+    ks = np.arange(-3.0, 5.01, 1.0)
+    meds = []
+    for k in ks:
+        out, _ = f3.simulate(st, small * np.float32(2.0 ** k), width_mm=width_mm)
+        meds.append(float(np.median(out @ Y_WEIGHTS)))
+    meds = np.maximum.accumulate(np.array(meds))          # monotonic for interpolation
+    if target <= meds[0]:
+        return float(ks[0])
+    if target >= meds[-1]:
+        return float(ks[-1])
+    i = int(np.searchsorted(meds, target))
+    k0, k1, m0, m1 = ks[i - 1], ks[i], meds[i - 1], meds[i]
+    k = k0 + (k1 - k0) * (target - m0) / max(m1 - m0, 1e-6)
+    out, _ = f3.simulate(st, small * np.float32(2.0 ** k), width_mm=width_mm)    # refine once
+    m = float(np.median(out @ Y_WEIGHTS))
+    slope = (m1 - m0) / (k1 - k0)
+    return float(np.clip(k + (target - m) / max(slope, 1e-3), ks[0], ks[-1]))
+
+
 def main():
     ap = argparse.ArgumentParser(description="Develop photos on simulated film (filmsim v3)")
     ap.add_argument("photos", nargs="*")
@@ -145,11 +199,22 @@ def main():
         print(f"Developing {os.path.basename(path)} on {getattr(st, 'display_name', a.stock)} ...", flush=True)
         name = os.path.basename(path)
         prog(n, 0.0, f"{name}: reading", force=True)
-        lin = f3.load_image(path, exposure_stops=a.exposure)
+        lin = f3.load_image(path, meter="none")             # keep the photographer's exposure
         prog(n, 0.12, f"{name}: preparing", force=True)
         H, W = lin.shape[:2]
         w = min(a.width, W)
         lin = transform.resize(lin, (int(round(H * w / W)), w), anti_aliasing=True).astype(np.float32)
+        prog(n, 0.16, f"{name}: matching your exposure", force=True)
+        target = reference_brightness(path)
+        if target is not None:
+            k = match_exposure(st, lin, target, FORMAT_MM[a.format])
+            how = f"matched preview brightness {target:.2f}"
+        else:
+            k = CAMERA_BASELINE_STOPS if os.path.splitext(path)[1].lower() in RAW_EXTS else 0.0
+            how = "camera baseline"
+        k += a.exposure
+        lin = lin * np.float32(2.0 ** k)
+        print(f"  exposure {k:+.2f} stops ({how}{', adjusted %+.1f' % a.exposure if a.exposure else ''})", flush=True)
         prog(n, 0.18, f"{name}: exposing and developing the film", force=True)
         f3.PROGRESS = lambda fr, n=n, name=name: prog(
             n, 0.18 + 0.62 * fr, f"{name}: " + ("making the print" if fr >= 0.999

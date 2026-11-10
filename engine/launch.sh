@@ -37,7 +37,7 @@ VENV="$HOME_DIR/venv-py$PYVER"
 BIN="$HOME_DIR/bin"; UV="$BIN/uv"
 export UV_PYTHON_INSTALL_DIR="$HOME_DIR/python"  # keep the app's Python inside its own folder
 export UV_CACHE_DIR="$HOME_DIR/cache"
-log "launch: engine $(cat VERSION), arch $ARCH, macOS $(sw_vers -productVersion 2>/dev/null), from ${FD_APPLET:+installed app}${FD_APPLET:-downloaded copy}, installed app v$(sed -n 1p "$HOME_DIR/installed_app" 2>/dev/null)"
+log "launch: engine $(cat VERSION), arch $ARCH, macOS $(sw_vers -productVersion 2>/dev/null), from $([ -n "$FD_APPLET" ] && echo "installed app" || echo "downloaded copy"), installed app v$(sed -n 1p "$HOME_DIR/installed_app" 2>/dev/null)"
 
 # ---- one-time: install a real Mac app (Dock icon, no security prompt) into Applications
 APPLET_WANT="$(sed -n 's/^APPLET_VERSION=//p' "$ENGINE/install_app.sh")"
