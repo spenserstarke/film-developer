@@ -5,7 +5,8 @@ export HOME_DIR="$HOME/Library/Application Support/FilmDeveloper"
 export ENGINE="$HOME_DIR/engine"
 export LOG="$HOME_DIR/last_run.log"
 mkdir -p "$HOME_DIR"
-[ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 2000000 ] && mv -f "$LOG" "$LOG.old"
+# one log per run: the previous run is kept as previous_run.log (the app's own line may land in either)
+[ -f "$LOG" ] && mv -f "$LOG" "$HOME_DIR/previous_run.log"
 exec 3>>"$LOG"
 echo "==== $(date) engine shell" >&3
 
