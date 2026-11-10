@@ -1,0 +1,8 @@
+numpy
+scipy
+scikit-image
+imageio
+tifffile
+pillow
+rawpy
+colour-science
