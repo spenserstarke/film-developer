@@ -61,6 +61,33 @@ def _headroom(t33, t48):
     return float(2.0 ** max(stops, 0.0))
 
 
+def scene_ev(path):
+    """Scene brightness (EV at ISO 100) from the photo's exposure settings, or None."""
+    try:
+        from PIL import Image
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+        sub = Image.open(path).getexif().get_ifd(0x8769)
+        n, t, iso = float(sub[0x829D]), float(sub[0x829A]), float(sub[0x8827])
+        return float(np.log2(n * n / t) - np.log2(iso / 100.0))
+    except Exception:
+        return None
+
+
+def night_weight(ev):
+    """0 in daylight (EV >= 8), 1 at night (EV <= 2). Night mode and Smart HDR process dark scenes
+    far more heavily (stacked frames, lifted shadows), so the undo scales with this."""
+    if ev is None:
+        return 0.5
+    return float(np.clip((8.0 - ev) / 6.0, 0.0, 1.0))
+
+
+def scene_params(path):
+    ev = scene_ev(path)
+    w = night_weight(ev)
+    return dict(ev=ev, night=w, contrast=1.08 + 0.22 * w, darken=1.0 - 0.15 * w)
+
+
 def is_iphone(path):
     try:
         from PIL import Image
@@ -71,7 +98,7 @@ def is_iphone(path):
         return False
 
 
-def load_iphone(path, contrast=1.3, desharpen_px=1.0, boost_stops=3.0, log=print):
+def load_iphone(path, contrast=None, desharpen_px=1.0, boost_stops=3.0, log=print):
     """Scene-linear sRGB float32 (H,W,3) from an iPhone HEIC/JPEG, with the steps above."""
     from PIL import Image, ImageOps, ImageCms
     import pillow_heif
@@ -123,7 +150,13 @@ def load_iphone(path, contrast=1.3, desharpen_px=1.0, boost_stops=3.0, log=print
             log(f"  iPhone mode: light sources extended by up to {boost_stops:.1f} stops "
                 f"({100 * np.mean(clipped > 0.5):.2f}% of the frame)")
 
-    # 2) undo the shadow lift: restore global contrast around the median, keep colour ratios
+    # 2) undo the shadow lift: restore global contrast around the median, keep colour ratios.
+    #    Strength follows how dark the scene was (night mode lifts far more than daylight HDR).
+    if contrast is None:
+        sp = scene_params(path)
+        contrast = sp["contrast"]
+        ev_txt = f"EV {sp['ev']:.1f}" if sp["ev"] is not None else "unknown light level"
+        log(f"  iPhone mode: {ev_txt} -> {'night' if sp['night'] > 0.66 else 'daylight' if sp['night'] < 0.33 else 'dim'} processing")
     if contrast and contrast != 1.0:
         Y = np.maximum(sdr @ Y_W, 1e-6)
         mid = float(np.median(Y))

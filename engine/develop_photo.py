@@ -220,7 +220,7 @@ def main():
         prog(n, 0.16, f"{name}: matching your exposure", force=True)
         target = reference_brightness(path)
         if target is not None and iphone_mode:
-            target *= 0.85      # night/HDR modes over-brighten; settle slightly darker, like film
+            target *= iphone.scene_params(path)["darken"]   # night mode over-brightens; daylight barely
         if target is not None:
             k = match_exposure(st, lin, target, FORMAT_MM[a.format])
             how = f"matched preview brightness {target:.2f}"
