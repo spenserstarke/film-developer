@@ -43,10 +43,10 @@ if [ ! -x "$VENV/bin/python" ] || [ "$(cat "$VENV/.req" 2>/dev/null)" != "$REQ_H
     log "creating Python $PYVER environment with uv"
     rm -rf "$VENV"
     if "$UV" venv --python "$PYVER" "$VENV" >&3 2>&1 \
-       && "$UV" pip install --python "$VENV/bin/python" -r requirements.txt >&3 2>&1; then
+       && "$UV" pip install --only-binary :all: --python "$VENV/bin/python" -r requirements.txt >&3 2>&1; then
       ok=1
       if [ "$ARCH" = "arm64" ] && [ -f requirements-gpu.txt ]; then
-        "$UV" pip install --python "$VENV/bin/python" -r requirements-gpu.txt >&3 2>&1 \
+        "$UV" pip install --only-binary :all: --python "$VENV/bin/python" -r requirements-gpu.txt >&3 2>&1 \
           || log "GPU components unavailable; CPU engine will be used"
       fi
     fi
@@ -71,6 +71,9 @@ if [ ! -x "$VENV/bin/python" ] || [ "$(cat "$VENV/.req" 2>/dev/null)" != "$REQ_H
   echo "$REQ_HASH" > "$VENV/.req"
   log "setup complete"
 fi
+
+# (--only-binary: never compile from source. Newer releases sometimes drop Intel-Mac builds, e.g.
+#  rawpy 0.28; with this flag the installer picks the newest version that has a ready-made build.)
 
 # ---- choose photos
 FILES=$(osascript <<'EOF'
