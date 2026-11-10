@@ -3,10 +3,10 @@
 # Called by the app bundle with: HOME_DIR, ENGINE, LOG (fd 3 open on the log).
 # Written for macOS's built-in bash 3.2.
 
-say() { osascript -e "display dialog \"$1\" buttons {\"OK\"} default button 1 with title \"Film Developer\"" >/dev/null 2>&1; }
+say() { osascript -e "activate" -e "display dialog \"$1\" buttons {\"OK\"} default button 1 with title \"Film Developer\"" >/dev/null 2>&1; }
 note() { osascript -e "display notification \"$1\" with title \"Film Developer\"" >/dev/null 2>&1; }
 fail() {
-  r=$(osascript -e "try" -e "button returned of (display dialog \"$1\" buttons {\"Show Log\", \"OK\"} default button 2 with title \"Film Developer\")" -e "end try")
+  r=$(osascript -e "activate" -e "try" -e "button returned of (display dialog \"$1\" buttons {\"Show Log\", \"OK\"} default button 2 with title \"Film Developer\")" -e "end try")
   [ "$r" = "Show Log" ] && open -a TextEdit "$LOG"
   exit 1
 }
@@ -76,7 +76,8 @@ fi
 #  rawpy 0.28; with this flag the installer picks the newest version that has a ready-made build.)
 
 # ---- choose photos
-FILES=$(osascript <<'EOF'
+FILES=$(osascript 2>&3 <<'EOF'
+activate
 try
   set picks to choose file with prompt "Choose photos to develop (RAW works best; JPEG, PNG and TIFF also work)" with multiple selections allowed
   set out to ""
@@ -95,14 +96,17 @@ EOF
 STOCKS="$("$VENV/bin/python" develop_photo.py --list-tsv 2>&3)" || fail "Film Developer couldn't load its film stocks."
 NAMES="$(printf '%s\n' "$STOCKS" | cut -f2 | sed 's/"/\\"/g' | awk '{printf "%s\"%s\"", (NR>1?",":""), $0}')"
 LAST="$(cat "$HOME_DIR/last_stock" 2>/dev/null || echo "Kodak Portra 400")"
-PICK=$(osascript -e "try" -e "set r to choose from list {$NAMES} with title \"Film Developer\" with prompt \"Film stock:\" default items {\"$LAST\"}" -e "if r is false then return \"\"" -e "return item 1 of r" -e "on error" -e "return \"\"" -e "end try")
-[ -z "$PICK" ] && exit 0
+note "Loading film stocks…"
+log "stocks loaded: $(printf '%s\n' "$STOCKS" | grep -c .)"
+PICK=$(osascript -e "activate" -e "try" -e "set r to choose from list {$NAMES} with title \"Film Developer\" with prompt \"Film stock:\" default items {\"$LAST\"}" -e "if r is false then return \"\"" -e "return item 1 of r" -e "on error m" -e "return \"ERROR: \" & m" -e "end try" 2>&3)
+log "stock picked: $PICK"
+case "$PICK" in "") exit 0 ;; ERROR:*) fail "The film stock list couldn't open." ;; esac
 echo "$PICK" > "$HOME_DIR/last_stock"
 KEY="$(printf '%s\n' "$STOCKS" | awk -F'\t' -v n="$PICK" '$2==n {print $1}')"
 
-SIZE=$(osascript -e 'try' -e 'button returned of (display dialog "Output size?" buttons {"Quick (1600 px)", "Standard (2400 px)", "Large (4000 px)"} default button 2 with title "Film Developer")' -e 'on error' -e 'return ""' -e 'end try')
+SIZE=$(osascript -e 'activate' -e 'try' -e 'button returned of (display dialog "Output size?" buttons {"Quick (1600 px)", "Standard (2400 px)", "Large (4000 px)"} default button 2 with title "Film Developer")' -e 'on error' -e 'return ""' -e 'end try')
 case "$SIZE" in Quick*) W=1600 ;; Large*) W=4000 ;; "") exit 0 ;; *) W=2400 ;; esac
-FMT=$(osascript -e 'try' -e 'button returned of (display dialog "Film format?" buttons {"35mm", "120 medium format"} default button 1 with title "Film Developer")' -e 'on error' -e 'return ""' -e 'end try')
+FMT=$(osascript -e 'activate' -e 'try' -e 'button returned of (display dialog "Film format?" buttons {"35mm", "120 medium format"} default button 1 with title "Film Developer")' -e 'on error' -e 'return ""' -e 'end try')
 case "$FMT" in 120*) F=120 ;; "") exit 0 ;; *) F=35 ;; esac
 
 ARGS=()
